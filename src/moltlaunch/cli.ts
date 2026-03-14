@@ -105,13 +105,21 @@ export interface RegisterOpts {
 }
 
 export async function registerAgent(opts: RegisterOpts): Promise<RegisterResult> {
+  const normalizedSkills = opts.skills
+    .map((skill) => skill.trim())
+    .filter((skill) => skill.length > 0);
+
+  if (normalizedSkills.length === 0) {
+    throw new Error("At least one skill is required for registration");
+  }
+
   const args = [
     "register",
     "--name", opts.name,
     "--description", opts.description,
-    "--skills", opts.skills.join(","),
     "--price", opts.price,
   ];
+  args.push("--skills", ...normalizedSkills);
   if (opts.symbol) {
     args.push("--symbol", opts.symbol);
   }
