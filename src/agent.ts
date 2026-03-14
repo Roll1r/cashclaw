@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   loadConfig,
   savePartialConfig,
@@ -695,20 +696,25 @@ async function handleKnowledgeDelete(
 }
 
 function serveStatic(pathname: string, res: http.ServerResponse) {
-  // Resolve the built UI dist directory.
-  // In dev (tsx): import.meta.dirname = src/, built UI at ../dist/ui
-  // In prod (dist/index.js): import.meta.dirname = dist/, built UI at ./ui
-  const baseDir = import.meta.dirname ?? __dirname;
-  const distUi = path.join(baseDir, "..", "dist", "ui");
-  const uiDir = fs.existsSync(path.join(distUi, "index.html"))
-    ? distUi
-    : path.join(baseDir, "ui");
+  const uiDir = resolveUiDir();
+
+  if (!uiDir) {
+    res.writeHead(503, { "Content-Type": "text/plain" });
+    res.end(
+      "UI bundle missing. Run `npm run build:ui` (or `npm run build:all`) before starting CashClaw.",
+    );
+    return;
+  }
 
   const resolvedUiDir = path.resolve(uiDir);
-  let filePath = path.resolve(uiDir, pathname === "/" ? "index.html" : pathname.slice(1));
+  let filePath = path.resolve(
+    uiDir,
+    pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1)),
+  );
 
-  // Path traversal guard — ensure resolved path is under uiDir
-  if (!filePath.startsWith(resolvedUiDir)) {
+  // Path traversal guard — ensure resolved path is under uiDir (cross-platform)
+  const relativePath = path.relative(resolvedUiDir, filePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -736,4 +742,24 @@ function serveStatic(pathname: string, res: http.ServerResponse) {
 
   res.writeHead(200, { "Content-Type": mimeTypes[ext] ?? "text/plain" });
   fs.createReadStream(filePath).pipe(res);
+}
+
+function resolveUiDir(): string | null {
+  const moduleDir = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
+  const candidateDirs = [
+    // In dev (tsx): moduleDir = src/, built UI at ../dist/ui
+    path.join(moduleDir, "..", "dist", "ui"),
+    // In prod (dist/index.js): moduleDir = dist/, built UI at ./ui
+    path.join(moduleDir, "ui"),
+    // Fallback for launches from repo root
+    path.join(process.cwd(), "dist", "ui"),
+  ];
+
+  for (const candidate of candidateDirs) {
+    if (fs.existsSync(path.join(candidate, "index.html"))) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
