@@ -35,6 +35,10 @@ async function mltl<T>(
       const { stdout } = await execFileAsync(bin, [...args, "--json"], {
         timeout,
         env: { ...process.env },
+        // Windows npm global binaries are often .cmd/.bat shims and may fail
+        // with EINVAL without shell mediation.
+        shell: process.platform === "win32",
+        windowsHide: true,
       });
 
       const parsed = JSON.parse(stdout.trim()) as T | CliError;
@@ -50,8 +54,12 @@ async function mltl<T>(
 
       return parsed as T;
     } catch (err) {
-      // On Windows, retry alternative executable names if command is missing.
-      if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      // On Windows, retry alternative executable names for launch-level failures.
+      if (
+        err instanceof Error &&
+        "code" in err &&
+        ["ENOENT", "EINVAL"].includes(String((err as NodeJS.ErrnoException).code))
+      ) {
         lastError = err;
         continue;
       }
