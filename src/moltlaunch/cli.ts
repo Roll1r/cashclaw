@@ -4,7 +4,7 @@ import type { Task, Bounty, WalletInfo, RegisterResult, AgentInfo } from "./type
 
 const execFileAsync = promisify(execFile);
 
-const MLTL_BIN = "mltl";
+const MLTL_BIN = process.env.MLTL_BIN?.trim() || "mltl";
 const DEFAULT_TIMEOUT = 30_000;
 const REGISTER_TIMEOUT = 120_000;
 
@@ -13,43 +13,74 @@ interface CliError {
   code?: string;
 }
 
+
+function getMltlCandidates(): string[] {
+  if (process.platform !== "win32") {
+    return [MLTL_BIN];
+  }
+
+  const candidates = [MLTL_BIN, "mltl.cmd", "mltl.exe", "mltl.bat"];
+  return [...new Set(candidates.filter((value) => value.length > 0))];
+}
+
 async function mltl<T>(
   args: string[],
   timeout = DEFAULT_TIMEOUT,
 ): Promise<T> {
-  try {
-    // --json is a per-subcommand flag, appended at the end
-    const { stdout } = await execFileAsync(MLTL_BIN, [...args, "--json"], {
-      timeout,
-      env: { ...process.env },
-    });
+  let lastError: unknown = null;
 
-    const parsed = JSON.parse(stdout.trim()) as T | CliError;
+  for (const bin of getMltlCandidates()) {
+    try {
+      // --json is a per-subcommand flag, appended at the end
+      const { stdout } = await execFileAsync(bin, [...args, "--json"], {
+        timeout,
+        env: { ...process.env },
+        // Windows npm global binaries are often .cmd/.bat shims and may fail
+        // with EINVAL without shell mediation.
+        shell: process.platform === "win32",
+        windowsHide: true,
+      });
 
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      "error" in parsed &&
-      typeof (parsed as CliError).error === "string"
-    ) {
-      throw new Error((parsed as CliError).error);
-    }
+      const parsed = JSON.parse(stdout.trim()) as T | CliError;
 
-    return parsed as T;
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("mltl")) {
-      throw err;
-    }
-    if (err instanceof Error) {
-      if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(
-          "mltl CLI not found. Install it with: npm install -g @moltlaunch/cli",
-        );
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        "error" in parsed &&
+        typeof (parsed as CliError).error === "string"
+      ) {
+        throw new Error((parsed as CliError).error);
       }
-      throw new Error(`mltl error: ${err.message}`);
+
+      return parsed as T;
+    } catch (err) {
+      // On Windows, retry alternative executable names for launch-level failures.
+      if (
+        err instanceof Error &&
+        "code" in err &&
+        ["ENOENT", "EINVAL"].includes(String((err as NodeJS.ErrnoException).code))
+      ) {
+        lastError = err;
+        continue;
+      }
+      lastError = err;
+      break;
     }
+  }
+
+  const err = lastError;
+  if (err instanceof Error && err.message.startsWith("mltl")) {
     throw err;
   }
+  if (err instanceof Error) {
+    if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        "mltl CLI not found. Install it with: npm install -g @moltlaunch/cli",
+      );
+    }
+    throw new Error(`mltl error: ${err.message}`);
+  }
+  throw err;
 }
 
 // --- Setup ---
